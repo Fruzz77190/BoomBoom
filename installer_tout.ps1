@@ -63,7 +63,9 @@ try {
     # 3. FFmpeg
     Write-Step "Verification de FFmpeg..."
     if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-        Write-Log "FFmpeg absent. Tentative via winget..."
+        Write-Log "FFmpeg absent. Telechargement en cours..."
+        Write-Log "PATIENTEZ : fichier volumineux (~220 Mo), cela peut prendre 5 a 10 minutes."
+        Write-Log "Ne fermez pas cette fenetre pendant l'extraction."
         $winget = Get-Command winget -ErrorAction SilentlyContinue
         if ($winget) {
             winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements 2>&1 |

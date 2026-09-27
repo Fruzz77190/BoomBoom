@@ -61,3 +61,6 @@ Write-Host "Tache planifiee creee avec succes !" -ForegroundColor Green
 Write-Host ""
 Write-Host "Verification :"
 & (Join-Path $PSScriptRoot "verifier_configuration.ps1")
+
+Write-Host ""
+Read-Host "Appuyez sur Entree pour fermer"

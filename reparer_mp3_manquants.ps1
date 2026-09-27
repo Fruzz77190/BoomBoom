@@ -16,6 +16,11 @@ if (-not $python) {
     exit 1
 }
 
+Write-Host "Mise a jour de yt-dlp..." -ForegroundColor Cyan
+& $python -m pip install --upgrade yt-dlp 2>&1 | ForEach-Object { Write-Host $_ }
+
+Write-Host ""
+Write-Host "Astuce : si erreur 403, connectez-vous a YouTube dans Edge ou Chrome." -ForegroundColor Yellow
 Write-Host "Reparation des MP3 manquants..." -ForegroundColor Cyan
 & $python -c @"
 import sys

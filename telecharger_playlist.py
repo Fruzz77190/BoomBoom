@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import sys
 from datetime import date
@@ -541,8 +542,40 @@ def download_playlist() -> None:
         )
 
 
+def upgrade_ytdlp() -> None:
+    import subprocess
+
+    print("Mise a jour de yt-dlp...")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+        check=False,
+    )
+
+
+def run_repair_only() -> int:
+    upgrade_ytdlp()
+    check_dependencies()
+    ensure_baseline()
+    errors = repair_incomplete_downloads()
+    if errors:
+        print(f"\nReparation terminee avec {errors} erreur(s).")
+        return 1
+    print("\nReparation terminee.")
+    return 0
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Synchronise la playlist YouTube en MP3.")
+    parser.add_argument(
+        "--repair-only",
+        action="store_true",
+        help="Repare uniquement les pochettes sans MP3 (reparer_mp3_manquants.bat).",
+    )
+    args = parser.parse_args()
+
     try:
+        if args.repair_only:
+            return run_repair_only()
         check_dependencies()
         ensure_baseline()
         download_playlist()

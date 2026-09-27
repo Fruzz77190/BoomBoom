@@ -1,5 +1,4 @@
 # Repare les telechargements incomplets (pochette webp sans MP3).
-# Double-clic ou : powershell -ExecutionPolicy Bypass -File .\reparer_mp3_manquants.ps1
 
 $ErrorActionPreference = "Continue"
 $ScriptDir = $PSScriptRoot
@@ -12,29 +11,31 @@ foreach ($cmd in @("py", "python", "python3")) {
 }
 if (-not $python) {
     Write-Host "Python introuvable." -ForegroundColor Red
-    Read-Host "Entree pour fermer"
+    Read-Host "Appuyez sur Entree pour fermer"
     exit 1
 }
-
-Write-Host "Mise a jour de yt-dlp..." -ForegroundColor Cyan
-& $python -m pip install --upgrade yt-dlp 2>&1 | ForEach-Object { Write-Host $_ }
 
 Write-Host ""
 Write-Host "IMPORTANT : les MP3 vont ici (pas dans le dossier BoomBoom) :" -ForegroundColor Yellow
 Write-Host "  $env:USERPROFILE\Desktop\Musique\Download\Boumboum" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Astuce 403 : connectez-vous a YouTube, fermez Edge/Chrome, puis relancez." -ForegroundColor Yellow
-Write-Host "Voir COOKIES_README.txt pour exporter cookies.txt si besoin." -ForegroundColor Yellow
+Write-Host "Ne fermez pas cette fenetre pendant le telechargement." -ForegroundColor Cyan
+Write-Host "(Cela peut prendre plusieurs minutes.)" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Reparation des MP3 manquants..." -ForegroundColor Cyan
-& $python -c @"
-import sys
-sys.path.insert(0, r'$ScriptDir')
-from telecharger_playlist import check_dependencies, ensure_baseline, repair_incomplete_downloads
-check_dependencies()
-ensure_baseline()
-repair_incomplete_downloads()
-"@
+
+$scriptPy = Join-Path $ScriptDir "telecharger_playlist.py"
+& $python $scriptPy --repair-only
+$code = $LASTEXITCODE
+
+Write-Host ""
+if ($code -ne 0) {
+    Write-Host "Des erreurs sont survenues. Lisez les messages ci-dessus." -ForegroundColor Red
+    Write-Host "Astuce 403 : connectez-vous a YouTube, fermez Edge/Chrome, relancez." -ForegroundColor Yellow
+    Write-Host "Voir COOKIES_README.txt pour le fichier cookies.txt." -ForegroundColor Yellow
+} else {
+    Write-Host "Verifiez le dossier Boumboum sur votre Bureau." -ForegroundColor Green
+}
 
 Write-Host ""
 Read-Host "Appuyez sur Entree pour fermer"
+exit $code

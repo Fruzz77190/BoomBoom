@@ -464,23 +464,27 @@ def print_download_folder_status() -> None:
             print(f"    - {path.name}")
 
 
-def repair_incomplete_downloads() -> int:
+def repair_incomplete_downloads(*, allow_mass_repair: bool = False) -> int:
     print_download_folder_status()
     entries = fetch_playlist_entries()
 
     orphans = find_orphan_thumbnails()
     from_orphans, unresolved = resolve_orphan_video_ids(orphans, entries)
-    from_playlist = find_videos_missing_mp3(entries)
-    from_archive = find_archive_entries_without_mp3(entries)
 
-    video_ids = (from_orphans | from_playlist | from_archive) - SKIP_VIDEO_IDS
+    # Par defaut : seulement les pochettes orphelines (pas toute la playlist).
+    video_ids = from_orphans - SKIP_VIDEO_IDS
+
+    if allow_mass_repair:
+        from_playlist = find_videos_missing_mp3(entries)
+        from_archive = find_archive_entries_without_mp3(entries)
+        video_ids |= (from_playlist | from_archive) - SKIP_VIDEO_IDS
+        if from_playlist:
+            print(f"Videos playlist sans MP3 : {len(from_playlist)}")
+        if from_archive:
+            print(f"Videos archivees sans MP3 : {len(from_archive)}")
 
     if orphans:
         print(f"\nReparation : {len(orphans)} pochette(s) sans MP3 detectee(s).")
-    if from_playlist:
-        print(f"Videos playlist sans MP3 : {len(from_playlist)}")
-    if from_archive:
-        print(f"Videos archivees sans MP3 : {len(from_archive)}")
 
     if unresolved:
         print("Fichiers non associes a une video de la playlist :")
@@ -596,12 +600,12 @@ def upgrade_ytdlp() -> None:
     )
 
 
-def run_repair_only() -> int:
+def run_repair_only(*, allow_mass_repair: bool = False) -> int:
     upgrade_ytdlp()
     check_dependencies()
     ensure_baseline()
     print("")
-    errors = repair_incomplete_downloads()
+    errors = repair_incomplete_downloads(allow_mass_repair=allow_mass_repair)
     print_download_folder_status()
     if errors:
         print(f"\nReparation terminee avec {errors} erreur(s).")
@@ -620,9 +624,9 @@ def run_repair_only() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Synchronise la playlist YouTube en MP3.")
     parser.add_argument(
-        "--repair-only",
+        "--repair-all",
         action="store_true",
-        help="Repare uniquement les pochettes sans MP3 (reparer_mp3_manquants.bat).",
+        help="(Deconseille) Tente de retélécharger tous les MP3 manquants.",
     )
     args = parser.parse_args()
 

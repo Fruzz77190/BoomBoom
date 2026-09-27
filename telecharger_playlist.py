@@ -425,37 +425,81 @@ def download_video_urls(urls: list[str], *, label: str, entries: list[dict]) -> 
     )
 
 
-def repair_incomplete_downloads() -> int:
-    orphans = find_orphan_thumbnails()
-    if not orphans:
-        return 0
+def find_videos_missing_mp3(entries: list[dict]) -> set[str]:
+    """Videos hors baseline qui devraient avoir un MP3 mais ne l'ont pas."""
+    baseline_ids = load_baseline_ids()
+    missing: set[str] = set()
+    for entry in entries:
+        video_id = entry.get("id")
+        if not video_id or video_id in baseline_ids or video_id in SKIP_VIDEO_IDS:
+            continue
+        if not mp3_path_for_entry(entry).exists():
+            missing.add(video_id)
+    return missing
 
-    print(f"Reparation : {len(orphans)} pochette(s) sans MP3 detectee(s).")
+
+def find_archive_entries_without_mp3(entries: list[dict]) -> set[str]:
+    """IDs marques dans l'archive sans fichier MP3 correspondant."""
+    by_id = entries_by_id(entries)
+    missing: set[str] = set()
+    for video_id in load_archive_ids():
+        if video_id in SKIP_VIDEO_IDS:
+            continue
+        entry = by_id.get(video_id, {"id": video_id, "title": video_id})
+        if not mp3_path_for_entry(entry).exists():
+            missing.add(video_id)
+    return missing
+
+
+def print_download_folder_status() -> None:
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    mp3_files = list(DOWNLOAD_DIR.glob("*.mp3"))
+    orphans = find_orphan_thumbnails()
+    print(f"Dossier cible : {DOWNLOAD_DIR}")
+    print(f"  Fichiers MP3        : {len(mp3_files)}")
+    print(f"  Pochettes sans MP3  : {len(orphans)}")
+    if mp3_files:
+        print("  Exemples MP3 :")
+        for path in sorted(mp3_files)[:3]:
+            print(f"    - {path.name}")
+
+
+def repair_incomplete_downloads() -> int:
+    print_download_folder_status()
     entries = fetch_playlist_entries()
-    video_ids, unresolved = resolve_orphan_video_ids(orphans, entries)
+
+    orphans = find_orphan_thumbnails()
+    from_orphans, unresolved = resolve_orphan_video_ids(orphans, entries)
+    from_playlist = find_videos_missing_mp3(entries)
+    from_archive = find_archive_entries_without_mp3(entries)
+
+    video_ids = (from_orphans | from_playlist | from_archive) - SKIP_VIDEO_IDS
+
+    if orphans:
+        print(f"\nReparation : {len(orphans)} pochette(s) sans MP3 detectee(s).")
+    if from_playlist:
+        print(f"Videos playlist sans MP3 : {len(from_playlist)}")
+    if from_archive:
+        print(f"Videos archivees sans MP3 : {len(from_archive)}")
 
     if unresolved:
         print("Fichiers non associes a une video de la playlist :")
         for name in unresolved[:10]:
             print(f"  - {name}")
-        if len(unresolved) > 10:
-            print(f"  ... et {len(unresolved) - 10} autre(s)")
 
     if not video_ids:
-        print("Impossible de retrouver les videos correspondantes.")
+        print(
+            "\nAucun morceau a retélécharger detecte."
+            "\nSi vous voyez des .webp sans .mp3, verifiez le dossier affiche ci-dessus."
+        )
         return 0
 
-    skipped = video_ids & SKIP_VIDEO_IDS
-    if skipped:
-        print(f"Ignorées (privées / indisponibles) : {', '.join(sorted(skipped))}")
-        cleanup_orphan_thumbnails()
-
-    video_ids -= SKIP_VIDEO_IDS
-    if not video_ids:
-        return 0
-
+    print(f"\nTotal a retélécharger : {len(video_ids)} video(s)")
     remove_ids_from_archive(video_ids)
-    urls = [f"https://www.youtube.com/watch?v={video_id}" for video_id in sorted(video_ids)]
+    urls = [
+        f"https://www.youtube.com/watch?v={video_id}"
+        for video_id in sorted(video_ids)
+    ]
     return download_video_urls(
         urls,
         label="Retelechargement MP3 manquants",
@@ -556,11 +600,20 @@ def run_repair_only() -> int:
     upgrade_ytdlp()
     check_dependencies()
     ensure_baseline()
+    print("")
     errors = repair_incomplete_downloads()
+    print_download_folder_status()
     if errors:
         print(f"\nReparation terminee avec {errors} erreur(s).")
         return 1
-    print("\nReparation terminee.")
+    mp3_count = len(list(DOWNLOAD_DIR.glob("*.mp3")))
+    if mp3_count == 0:
+        print(
+            "\nAucun MP3 dans le dossier. YouTube bloque peut-etre le telechargement (403)."
+            "\nConnectez-vous a YouTube, fermez Edge/Chrome, ou ajoutez cookies.txt."
+        )
+        return 1
+    print(f"\nReparation terminee. {mp3_count} fichier(s) MP3 dans Boumboum.")
     return 0
 
 

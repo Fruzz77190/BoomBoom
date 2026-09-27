@@ -20,6 +20,9 @@ BASELINE_FILE = DOWNLOAD_DIR / ".baseline_done"
 BASELINE_IDS_FILE = DOWNLOAD_DIR / "baseline_ids.txt"
 AUDIO_QUALITY = "320"
 THUMB_EXTENSIONS = {".webp", ".jpg", ".jpeg", ".png"}
+# Videos connues comme privees / indisponibles (ne pas retenter).
+SKIP_VIDEO_IDS = {"-ed8q6o0Bsc"}
+COOKIE_BROWSERS = ("edge", "chrome", "firefox", "brave")
 
 
 def check_dependencies() -> None:
@@ -36,7 +39,16 @@ def check_dependencies() -> None:
         ) from exc
 
 
-def build_ydl_opts(*, match_filter=None) -> dict:
+def apply_youtube_extract_opts(opts: dict) -> None:
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["android", "web", "mweb"],
+        }
+    }
+    opts["remote_components"] = ["ejs:github"]
+
+
+def build_ydl_opts(*, match_filter=None, browser: str | None = None) -> dict:
     opts: dict = {
         "format": "bestaudio/best",
         "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
@@ -64,9 +76,39 @@ def build_ydl_opts(*, match_filter=None) -> dict:
         "quiet": False,
         "no_warnings": False,
     }
+    apply_youtube_extract_opts(opts)
+    if browser:
+        opts["cookiesfrombrowser"] = (browser,)
     if match_filter is not None:
         opts["match_filter"] = match_filter
     return opts
+
+
+def create_youtube_dl(
+    *, match_filter=None, noplaylist: bool = True
+) -> yt_dlp.YoutubeDL:
+    errors: list[str] = []
+    for browser in COOKIE_BROWSERS:
+        try:
+            opts = build_ydl_opts(match_filter=match_filter, browser=browser)
+            opts["noplaylist"] = noplaylist
+            print(f"Connexion YouTube via cookies : {browser}")
+            return yt_dlp.YoutubeDL(opts)
+        except Exception as exc:
+            errors.append(f"{browser}: {exc}")
+
+    print(
+        "Cookies navigateur indisponibles. "
+        "Connectez-vous a YouTube dans Edge ou Chrome puis relancez."
+    )
+    if errors:
+        print("Details :")
+        for line in errors[:4]:
+            print(f"  - {line}")
+
+    opts = build_ydl_opts(match_filter=match_filter)
+    opts["noplaylist"] = noplaylist
+    return yt_dlp.YoutubeDL(opts)
 
 
 def fetch_playlist_entries() -> list[dict]:
@@ -75,6 +117,7 @@ def fetch_playlist_entries() -> list[dict]:
         "quiet": True,
         "ignoreerrors": True,
     }
+    apply_youtube_extract_opts(ydl_opts)
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(PLAYLIST_URL, download=False)
 
@@ -235,14 +278,57 @@ def cleanup_orphan_thumbnails() -> int:
     return removed
 
 
-def download_video_urls(urls: list[str], *, label: str) -> int:
+def entries_by_id(entries: list[dict]) -> dict[str, dict]:
+    return {entry["id"]: entry for entry in entries if entry.get("id")}
+
+
+def mp3_path_for_entry(entry: dict) -> Path:
+    title = entry.get("title") or entry.get("id") or "video"
+    return DOWNLOAD_DIR / f"{title_to_stem(title)}.mp3"
+
+
+def finalize_download_attempt(video_ids: set[str], entries: list[dict]) -> None:
+    """Retire de l'archive les videos sans MP3 et supprime les pochettes orphelines."""
+    by_id = entries_by_id(entries)
+    failed: set[str] = set()
+
+    for video_id in video_ids:
+        entry = by_id.get(video_id)
+        if not entry:
+            continue
+        if not mp3_path_for_entry(entry).exists():
+            failed.add(video_id)
+
+    if not failed:
+        return
+
+    remove_ids_from_archive(failed)
+    cleanup_orphan_thumbnails()
+    print(
+        f"\n{len(failed)} telechargement(s) echoue(s) — non enregistre(s) dans l'archive."
+    )
+    print(
+        "Si vous voyez 'HTTP 403' : ouvrez YouTube dans Edge/Chrome, "
+        "connectez-vous, puis relancez reparer_mp3_manquants.bat."
+    )
+    for video_id in sorted(failed):
+        title = by_id.get(video_id, {}).get("title", video_id)
+        if video_id in SKIP_VIDEO_IDS:
+            print(f"  - {title} (video privee / ignoree)")
+        else:
+            print(f"  - {title}")
+
+
+def download_video_urls(urls: list[str], *, label: str, entries: list[dict]) -> int:
     if not urls:
         return 0
 
+    video_ids = {url.rsplit("=", 1)[-1] for url in urls}
     print(f"\n{label} : {len(urls)} video(s)")
-    ydl_opts = build_ydl_opts()
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with create_youtube_dl() as ydl:
         errors = ydl.download(urls)
+
+    finalize_download_attempt(video_ids, entries)
 
     if errors:
         print(f"Termine avec {errors} erreur(s) pour {label}.")
@@ -269,9 +355,22 @@ def repair_incomplete_downloads() -> int:
         print("Impossible de retrouver les videos correspondantes.")
         return 0
 
+    skipped = video_ids & SKIP_VIDEO_IDS
+    if skipped:
+        print(f"Ignorées (privées / indisponibles) : {', '.join(sorted(skipped))}")
+        cleanup_orphan_thumbnails()
+
+    video_ids -= SKIP_VIDEO_IDS
+    if not video_ids:
+        return 0
+
     remove_ids_from_archive(video_ids)
     urls = [f"https://www.youtube.com/watch?v={video_id}" for video_id in sorted(video_ids)]
-    return download_video_urls(urls, label="Retelechargement MP3 manquants")
+    return download_video_urls(
+        urls,
+        label="Retelechargement MP3 manquants",
+        entries=entries,
+    )
 
 
 def count_pending_downloads() -> tuple[int, set[str]]:
@@ -327,9 +426,6 @@ def download_playlist() -> None:
         print("Synchronisation terminée (reparation effectuee).")
         return
 
-    ydl_opts = build_ydl_opts(match_filter=match_filter)
-    ydl_opts["noplaylist"] = False
-
     print(f"Playlist : {PLAYLIST_URL}")
     print(f"Dossier  : {DOWNLOAD_DIR}")
     print(f"Archive  : {ARCHIVE_FILE}")
@@ -339,8 +435,11 @@ def download_playlist() -> None:
               + (" ..." if len(pending_ids) > 5 else ""))
     print()
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    entries = fetch_playlist_entries()
+    with create_youtube_dl(match_filter=match_filter, noplaylist=False) as ydl:
         errors = ydl.download([PLAYLIST_URL])
+
+    finalize_download_attempt(set(pending_ids), entries)
 
     if errors:
         print(f"\nTerminé avec {errors} erreur(s).")

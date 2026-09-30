@@ -22,6 +22,12 @@ ARCHIVE_FILE = DOWNLOAD_DIR / "archive.txt"
 BASELINE_FILE = DOWNLOAD_DIR / ".baseline_done"
 BASELINE_IDS_FILE = DOWNLOAD_DIR / "baseline_ids.txt"
 AUDIO_QUALITY = "320"
+# Pochette carree haute resolution (affichage plein dans l'explorateur Windows).
+COVER_SIZE = 1000
+SQUARE_COVER_VF = (
+    f"scale={COVER_SIZE}:{COVER_SIZE}:force_original_aspect_ratio=increase,"
+    f"crop={COVER_SIZE}:{COVER_SIZE}"
+)
 THUMB_EXTENSIONS = {".webp", ".jpg", ".jpeg", ".png"}
 # Videos connues comme privees / indisponibles (ne pas retenter).
 SKIP_VIDEO_IDS = {"-ed8q6o0Bsc"}

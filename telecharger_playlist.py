@@ -62,7 +62,7 @@ def build_ydl_opts(
     match_filter=None,
     browser: str | None = None,
     cookiefile: str | None = None,
-    with_thumbnail: bool = False,
+    with_thumbnail: bool = True,
     use_archive: bool = True,
     clients: list[str] | None = None,
 ) -> dict:
@@ -96,7 +96,10 @@ def build_ydl_opts(
     if use_archive:
         opts["download_archive"] = str(ARCHIVE_FILE)
     if with_thumbnail:
-        opts["postprocessor_args"] = {"EmbedThumbnail": ["-c:v", "mjpeg"]}
+        opts["postprocessor_args"] = {
+            "FFmpegThumbnailsConvertor": ["-vf", SQUARE_COVER_VF],
+            "EmbedThumbnail": ["-c:v", "mjpeg", "-q:v", "2"],
+        }
 
     apply_youtube_extract_opts(opts, clients=clients)
     if browser:
@@ -147,7 +150,7 @@ def try_create_youtube_dl(strategy: dict, *, match_filter=None, noplaylist: bool
         match_filter=match_filter,
         browser=strategy.get("browser"),
         cookiefile=strategy.get("cookiefile"),
-        with_thumbnail=False,
+        with_thumbnail=True,
         use_archive=False,
         clients=strategy.get("clients"),
     )

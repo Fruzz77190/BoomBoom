@@ -81,7 +81,7 @@ try {
         throw "Dependances manquantes. Corrigez les erreurs ci-dessus."
     }
 
-    & $python $PythonScript 2>&1 | ForEach-Object {
+    & $python $PythonScript --sync-only 2>&1 | ForEach-Object {
         Write-Log "$_"
     }
 

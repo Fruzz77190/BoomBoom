@@ -32,6 +32,8 @@ THUMB_EXTENSIONS = {".webp", ".jpg", ".jpeg", ".png"}
 # Videos connues comme privees / indisponibles (ne pas retenter).
 SKIP_VIDEO_IDS = {"-ed8q6o0Bsc"}
 COOKIE_BROWSERS = ("edge", "chrome", "firefox", "brave")
+# Au-dela de ce nombre, la sync automatique refuse un telechargement massif (securite).
+MAX_AUTO_PENDING = 5
 
 
 def check_dependencies() -> None:
@@ -520,11 +522,66 @@ def repair_incomplete_downloads(*, allow_mass_repair: bool = False) -> int:
     )
 
 
-def count_pending_downloads() -> tuple[int, set[str]]:
-    playlist_ids = fetch_playlist_ids()
+def ids_with_local_mp3(entries: list[dict]) -> set[str]:
+    """IDs playlist pour lesquels un MP3 est present (titre exact ou nom de fichier)."""
+    stem_map = map_stem_to_video_id(entries)
+    found: set[str] = set()
+    for entry in entries:
+        video_id = entry.get("id")
+        if not video_id:
+            continue
+        if mp3_path_for_entry(entry).exists():
+            found.add(video_id)
+    if DOWNLOAD_DIR.exists():
+        for mp3 in DOWNLOAD_DIR.glob("*.mp3"):
+            video_id = map_stem_to_video_id_fuzzy(mp3.stem, stem_map)
+            if video_id:
+                found.add(video_id)
+    return found
+
+
+def heal_baseline_if_needed(entries: list[dict]) -> bool:
+    """Reconstruit baseline_ids.txt s'il est vide alors que la bibliotheque existe deja."""
+    if load_baseline_ids():
+        return False
+
+    archive_ids = load_archive_ids()
+    if not BASELINE_FILE.exists() and not archive_ids:
+        mp3_count = len(list(DOWNLOAD_DIR.glob("*.mp3"))) if DOWNLOAD_DIR.exists() else 0
+        if mp3_count == 0:
+            return False
+
+    playlist_ids = {entry["id"] for entry in entries if entry.get("id")}
+    have_mp3 = ids_with_local_mp3(entries)
+    without_mp3 = playlist_ids - have_mp3 - SKIP_VIDEO_IDS
+    pending_candidates = without_mp3 - archive_ids
+
+    if not BASELINE_FILE.exists() and len(have_mp3) < 3 and len(pending_candidates) <= MAX_AUTO_PENDING:
+        return False
+
+    healed = playlist_ids - pending_candidates
+    save_baseline_ids(healed)
+    print(
+        f"Reconstruction baseline_ids.txt : {len(healed)} video(s) ignorees, "
+        f"{len(pending_candidates)} telechargement(s) autorise(s) au maximum."
+    )
+    if len(pending_candidates) > MAX_AUTO_PENDING:
+        print(
+            f"SECURITE : {len(pending_candidates)} morceaux sans MP3 detectes "
+            f"(>{MAX_AUTO_PENDING}). Aucun telechargement massif automatique."
+            "\nUtilisez reparer_mp3_manquants.bat si vous voulez reparer manuellement."
+        )
+    return True
+
+
+def count_pending_downloads(entries: list[dict] | None = None) -> tuple[int, set[str]]:
+    if entries is None:
+        entries = fetch_playlist_entries()
+    playlist_ids = {entry["id"] for entry in entries if entry.get("id")}
+    heal_baseline_if_needed(entries)
     baseline_ids = load_baseline_ids()
     archive_ids = load_archive_ids()
-    pending = playlist_ids - baseline_ids - archive_ids
+    pending = playlist_ids - baseline_ids - archive_ids - SKIP_VIDEO_IDS
     return len(pending), pending
 
 
@@ -532,6 +589,8 @@ def ensure_baseline() -> None:
     migrate_legacy_baseline()
 
     if BASELINE_FILE.exists():
+        entries = fetch_playlist_entries()
+        heal_baseline_if_needed(entries)
         return
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -549,12 +608,17 @@ def ensure_baseline() -> None:
     print("Seules les vidéos ajoutées désormais seront téléchargées.\n")
 
 
-def download_playlist() -> None:
+def download_playlist(*, sync_only: bool = False) -> None:
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    repair_errors = repair_incomplete_downloads()
+    repair_errors = 0
+    if not sync_only:
+        repair_errors = repair_incomplete_downloads()
+    else:
+        print("Mode synchronisation planifiee : reparation des MP3 desactivee.")
 
-    pending_count, pending_ids = count_pending_downloads()
+    entries = fetch_playlist_entries()
+    pending_count, pending_ids = count_pending_downloads(entries)
     print(f"Nouvelles vidéos à télécharger : {pending_count}")
 
     if pending_count == 0 and repair_errors == 0:
@@ -563,6 +627,15 @@ def download_playlist() -> None:
 
     if pending_count == 0:
         print("Synchronisation terminée (reparation effectuee).")
+        return
+
+    if sync_only and pending_count > MAX_AUTO_PENDING:
+        print(
+            f"\nARRET SECURITE : {pending_count} videos en attente "
+            f"(maximum {MAX_AUTO_PENDING} en sync automatique)."
+            "\nVerifiez baseline_ids.txt et archive.txt dans Boumboum."
+            "\nPour reparer volontairement : reparer_mp3_manquants.bat"
+        )
         return
 
     print(f"Playlist : {PLAYLIST_URL}")
@@ -574,7 +647,6 @@ def download_playlist() -> None:
               + (" ..." if len(pending_ids) > 5 else ""))
     print()
 
-    entries = fetch_playlist_entries()
     pending_urls = [
         f"https://www.youtube.com/watch?v={video_id}"
         for video_id in sorted(pending_ids)
@@ -633,18 +705,28 @@ def run_repair_only(*, allow_mass_repair: bool = False) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Synchronise la playlist YouTube en MP3.")
     parser.add_argument(
+        "--repair-only",
+        action="store_true",
+        help="Repare les pochettes orphelines (sans retélécharger toute la playlist).",
+    )
+    parser.add_argument(
         "--repair-all",
         action="store_true",
         help="(Deconseille) Tente de retélécharger tous les MP3 manquants.",
+    )
+    parser.add_argument(
+        "--sync-only",
+        action="store_true",
+        help="Sync planifiee : nouvelles videos uniquement, sans reparation massive.",
     )
     args = parser.parse_args()
 
     try:
         if args.repair_only:
-            return run_repair_only()
+            return run_repair_only(allow_mass_repair=args.repair_all)
         check_dependencies()
         ensure_baseline()
-        download_playlist()
+        download_playlist(sync_only=args.sync_only)
     except Exception as exc:
         print(f"Erreur : {exc}", file=sys.stderr)
         return 1

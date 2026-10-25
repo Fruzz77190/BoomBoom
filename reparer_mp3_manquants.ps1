@@ -3,6 +3,7 @@
 $ErrorActionPreference = "Continue"
 $ScriptDir = $PSScriptRoot
 Set-Location $ScriptDir
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $python = $null
 foreach ($cmd in @("py", "python", "python3")) {

@@ -54,6 +54,8 @@ function Remove-OldLogs {
 
 try {
     Set-Location $ScriptDir
+    # Lit la sortie de Python en UTF-8 (accents et caracteres speciaux corrects).
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
     if (-not (Test-Path $PythonScript)) {
         throw "Script introuvable : $PythonScript"

@@ -1,2 +1,7 @@
 # Artefacts locaux de test (environnement cloud)
 C:\Users\
+
+# Secrets et fichiers locaux : ne jamais envoyer sur GitHub
+cookies.txt
+install_log.txt
+__pycache__/

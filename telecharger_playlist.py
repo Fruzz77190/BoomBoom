@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -22,12 +25,9 @@ ARCHIVE_FILE = DOWNLOAD_DIR / "archive.txt"
 BASELINE_FILE = DOWNLOAD_DIR / ".baseline_done"
 BASELINE_IDS_FILE = DOWNLOAD_DIR / "baseline_ids.txt"
 AUDIO_QUALITY = "320"
-# Pochette carree haute resolution (affichage plein dans l'explorateur Windows).
-COVER_SIZE = 1000
-SQUARE_COVER_VF = (
-    f"scale={COVER_SIZE}:{COVER_SIZE}:force_original_aspect_ratio=increase,"
-    f"crop={COVER_SIZE}:{COVER_SIZE}"
-)
+OUTTMPL = str(DOWNLOAD_DIR / "%(title)s.%(ext)s")
+# Pochette carree (bandes noires retirees) pour une miniature pleine dans Windows.
+COVER_MAX_SIZE = 1000
 THUMB_EXTENSIONS = {".webp", ".jpg", ".jpeg", ".png"}
 # Videos connues comme privees / indisponibles (ne pas retenter).
 SKIP_VIDEO_IDS = {"-ed8q6o0Bsc"}
@@ -86,7 +86,7 @@ def build_ydl_opts(
 
     opts: dict = {
         "format": "bestaudio/best",
-        "outtmpl": str(DOWNLOAD_DIR / "%(title)s.%(ext)s"),
+        "outtmpl": OUTTMPL,
         "ignoreerrors": False,
         "noplaylist": True,
         "writethumbnail": with_thumbnail,
@@ -99,7 +99,6 @@ def build_ydl_opts(
         opts["download_archive"] = str(ARCHIVE_FILE)
     if with_thumbnail:
         opts["postprocessor_args"] = {
-            "FFmpegThumbnailsConvertor": ["-vf", SQUARE_COVER_VF],
             "EmbedThumbnail": ["-c:v", "mjpeg", "-q:v", "2"],
         }
 
@@ -185,6 +184,8 @@ def download_urls_with_strategies(
 
         if mp3_path_for_entry(entry).exists():
             print("MP3 deja present, ignore.")
+            if use_archive_after_success:
+                add_to_archive(video_id)
             continue
 
         success = False
@@ -199,12 +200,13 @@ def download_urls_with_strategies(
                 print(f"  Echec : {exc}")
                 continue
 
-            if mp3_path_for_entry(entry).exists():
+            mp3 = mp3_path_for_entry(entry)
+            if mp3.exists():
                 print("  OK — MP3 telecharge.")
                 success = True
+                square_cover(mp3)
                 if use_archive_after_success:
-                    with ARCHIVE_FILE.open("a", encoding="utf-8") as archive:
-                        archive.write(f"youtube {video_id}\n")
+                    add_to_archive(video_id)
                 break
             print("  Pas de MP3 cree, strategie suivante...")
 
@@ -262,6 +264,13 @@ def save_id_file(path: Path, ids: set[str]) -> None:
     else:
         lines = sorted(ids)
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def add_to_archive(video_id: str) -> None:
+    if video_id in load_archive_ids():
+        return
+    with ARCHIVE_FILE.open("a", encoding="utf-8") as archive:
+        archive.write(f"youtube {video_id}\n")
 
 
 def remove_ids_from_archive(video_ids: set[str]) -> None:
@@ -387,9 +396,114 @@ def entries_by_id(entries: list[dict]) -> dict[str, dict]:
     return {entry["id"]: entry for entry in entries if entry.get("id")}
 
 
+_NAMER = yt_dlp.YoutubeDL({"outtmpl": OUTTMPL, "quiet": True})
+
+
 def mp3_path_for_entry(entry: dict) -> Path:
-    title = entry.get("title") or entry.get("id") or "video"
-    return DOWNLOAD_DIR / f"{title_to_stem(title)}.mp3"
+    """Chemin exact du MP3, calcule comme yt-dlp nomme ses fichiers."""
+    info = {**entry, "ext": "mp3"}
+    if not info.get("title"):
+        info["title"] = entry.get("id") or "video"
+    return Path(_NAMER.prepare_filename(info))
+
+
+def image_size(image: Path) -> tuple[int, int] | None:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "csv=p=0",
+            str(image),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    match = re.match(r"(\d+),(\d+)", result.stdout.strip())
+    return (int(match[1]), int(match[2])) if match else None
+
+
+def detect_content_box(image: Path) -> tuple[int, int, int, int] | None:
+    """Zone utile de l'image (sans les bandes noires) : largeur, hauteur, x, y."""
+    result = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-i", str(image),
+            "-vf", "cropdetect=limit=24:round=2:skip=0:reset=0",
+            "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    boxes = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", result.stderr)
+    if not boxes:
+        return None
+    w, h, x, y = (int(v) for v in boxes[-1])
+    return (w, h, x, y) if w > 0 and h > 0 else None
+
+
+def square_cover(mp3: Path) -> bool:
+    """Recadre la pochette integree en carre centre sur la pochette du disque."""
+    from mutagen.id3 import APIC, ID3, ID3NoHeaderError
+
+    try:
+        tags = ID3(mp3)
+    except ID3NoHeaderError:
+        return False
+    pictures = tags.getall("APIC")
+    if not pictures:
+        return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "source.img"
+        target = Path(tmp) / "cover.jpg"
+        source.write_bytes(pictures[0].data)
+
+        # Deja carree : deja recadree, on n'y touche plus.
+        size = image_size(source)
+        if size is None or size[0] == size[1]:
+            return False
+
+        box = detect_content_box(source)
+        if box is None:
+            return False
+        w, h, x, y = box
+        side = min(w, h)
+        x += (w - side) // 2
+        y += (h - side) // 2
+        size = min(side, COVER_MAX_SIZE)
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(source),
+                "-vf", f"crop={side}:{side}:{x}:{y},scale={size}:{size}",
+                "-q:v", "2", str(target),
+            ],
+            capture_output=True,
+        )
+        if result.returncode != 0 or not target.exists():
+            return False
+
+        tags.delall("APIC")
+        tags.add(
+            APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover",
+                 data=target.read_bytes())
+        )
+        tags.save(mp3)
+    return True
+
+
+def square_all_covers() -> int:
+    mp3_files = sorted(DOWNLOAD_DIR.glob("*.mp3"))
+    done = 0
+    for mp3 in mp3_files:
+        if square_cover(mp3):
+            done += 1
+            print(f"Pochette recadree : {mp3.name}")
+        else:
+            print(f"Pochette inchangee : {mp3.name}")
+    print(f"\n{done} pochette(s) recadree(s) sur {len(mp3_files)} MP3.")
+    return 0
 
 
 def finalize_download_attempt(video_ids: set[str], entries: list[dict]) -> None:
@@ -703,6 +817,10 @@ def run_repair_only(*, allow_mass_repair: bool = False) -> int:
 
 
 def main() -> int:
+    # Titres avec caracteres speciaux (ex. 【】) : ne jamais planter a l'affichage.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Synchronise la playlist YouTube en MP3.")
     parser.add_argument(
         "--repair-only",
@@ -715,6 +833,11 @@ def main() -> int:
         help="(Deconseille) Tente de retélécharger tous les MP3 manquants.",
     )
     parser.add_argument(
+        "--pochettes",
+        action="store_true",
+        help="Recadre en carre les pochettes de tous les MP3 deja telecharges.",
+    )
+    parser.add_argument(
         "--sync-only",
         action="store_true",
         help="Sync planifiee : nouvelles videos uniquement, sans reparation massive.",
@@ -722,6 +845,9 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        if args.pochettes:
+            check_dependencies()
+            return square_all_covers()
         if args.repair_only:
             return run_repair_only(allow_mass_repair=args.repair_all)
         check_dependencies()

@@ -85,7 +85,7 @@ if (-not $task) {
 
     $trigger = $task.Triggers | Select-Object -First 1
     if ($trigger) {
-        $heure = "{0:00}:{1:00}" -f $trigger.StartBoundary.Hour, $trigger.StartBoundary.Minute
+        $heure = ([datetime]$trigger.StartBoundary).ToString("HH:mm")
         if ($heure -eq $HeureAttendue) {
             Report-Ok "Horaire : $heure (quotidien)"
         } else {

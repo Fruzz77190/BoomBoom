@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -442,8 +443,8 @@ def detect_content_box(image: Path) -> tuple[int, int, int, int] | None:
 
 
 def square_cover(mp3: Path) -> bool:
-    """Recadre la pochette integree en carre centre sur la pochette du disque."""
-    from mutagen.id3 import APIC, ID3, ID3NoHeaderError
+    """Pochette integree carree, enregistree dans le format lu par Windows."""
+    from mutagen.id3 import APIC, ID3, ID3NoHeaderError, Encoding
 
     try:
         tags = ID3(mp3)
@@ -452,44 +453,53 @@ def square_cover(mp3: Path) -> bool:
     pictures = tags.getall("APIC")
     if not pictures:
         return False
+    data, mime = pictures[0].data, pictures[0].mime
 
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "source.img"
         target = Path(tmp) / "cover.jpg"
-        source.write_bytes(pictures[0].data)
+        source.write_bytes(data)
 
-        # Deja carree : deja recadree, on n'y touche plus.
-        size = image_size(source)
-        if size is None or size[0] == size[1]:
+        image = image_size(source)
+        if image is None:
             return False
 
-        box = detect_content_box(source)
-        if box is None:
-            return False
-        w, h, x, y = box
-        side = min(w, h)
-        x += (w - side) // 2
-        y += (h - side) // 2
-        size = min(side, COVER_MAX_SIZE)
+        if image[0] != image[1]:
+            # Image trop sombre pour reperer les bandes : carre au centre.
+            w, h, x, y = detect_content_box(source) or (*image, 0, 0)
+            side = min(w, h)
+            x += (w - side) // 2
+            y += (h - side) // 2
+            size = min(side, COVER_MAX_SIZE)
 
-        result = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-i", str(source),
-                "-vf", f"crop={side}:{side}:{x}:{y},scale={size}:{size}",
-                "-q:v", "2", str(target),
-            ],
-            capture_output=True,
-        )
-        if result.returncode != 0 or not target.exists():
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(source),
+                    "-vf", f"crop={side}:{side}:{x}:{y},scale={size}:{size}",
+                    "-q:v", "2", str(target),
+                ],
+                capture_output=True,
+            )
+            if result.returncode != 0 or not target.exists():
+                return False
+            data, mime = target.read_bytes(), "image/jpeg"
+        elif (
+            tags.version[1] == 3
+            and len(pictures) == 1
+            and pictures[0].encoding == Encoding.LATIN1
+        ):
+            # Deja carree et lisible par Windows : on n'y touche plus.
             return False
 
+        # Windows n'affiche pas de miniature si l'image est codee en UTF-8.
         tags.delall("APIC")
-        tags.add(
-            APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover",
-                 data=target.read_bytes())
-        )
-        tags.save(mp3)
+        tags.add(APIC(encoding=Encoding.LATIN1, mime=mime, type=3, desc="", data=data))
+        tags.update_to_v23()
+        # Garde la date du fichier : le tri par date reste celui des telechargements.
+        modified = mp3.stat()
+        tags.save(mp3, v2_version=3)
+        os.utime(mp3, (modified.st_atime, modified.st_mtime))
     return True
 
 

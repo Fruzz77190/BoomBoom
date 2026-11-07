@@ -36,6 +36,8 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $scriptDir
 
 $trigger = New-ScheduledTaskTrigger -Daily -At $Heure
+# Heure locale sans decalage horaire : reste a la meme heure apres le passage a l'heure d'hiver.
+$trigger.StartBoundary = (Get-Date $Heure).ToString("yyyy-MM-ddTHH:mm:ss")
 
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
